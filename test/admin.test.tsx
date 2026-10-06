@@ -38,12 +38,44 @@ const entry = (id: string, action: string, actorName: string, details: Record<st
   createdAt: new Date().toISOString(),
 });
 
+const dialerDefaults = () => ({
+  scheduleEnabled: false,
+  campaigns: [] as string[],
+  minTalkSeconds: 20,
+  dailyLimit: 200,
+  batchLimit: 50,
+  pollIntervalSeconds: 300,
+  phoneDigits: 4,
+  writebackEnabled: false,
+});
+
+const dialerStatus = (extra: Record<string, unknown> = {}) => ({
+  databaseConfigured: true,
+  scheduleEnabled: false,
+  cursor: '2026-10-02 10:56:04',
+  importedToday: 3,
+  dailyLimit: 200,
+  campaigns: [],
+  minTalkSeconds: 20,
+  writebackEnabled: false,
+  archiveEnabled: true,
+  version: '0.4.0',
+  lastRunAt: null,
+  lastRunSummary: '',
+  ...extra,
+});
+
 const quiet = {
   Me: () => ({ me: person }),
   Users: () => ({ users: [user('usr_1', 'a@example.test', 'Asha', 'admin')] }),
   Invitations: () => ({ invitations: [] }),
   ApiKeys: () => ({ apiKeys: [] }),
-  Settings: () => ({ settings: { autoTranscribe: true } }),
+  Settings: () => ({ settings: { autoTranscribe: true, dialer: dialerDefaults() } }),
+  DialerStatus: () => ({ dialerStatus: dialerStatus() }),
+  DialerCampaigns: () => ({ dialerCampaigns: [] }),
+  SystemStatus: () => ({
+    systemStatus: { version: '0.11.0', checkedAt: new Date().toISOString(), services: [] },
+  }),
   Engines: () => ({
     engines: [{ registryId: 'whisper-turbo', engine: 'faster-whisper', available: true, isDefault: true }],
   }),
@@ -167,5 +199,89 @@ describe('the admin app', () => {
     renderAt('/admin', <App />, client);
     expect(await screen.findByRole('alert')).toHaveTextContent('Only an admin can see this page.');
     expect(screen.queryByRole('heading', { name: 'People' })).not.toBeInTheDocument();
+  });
+});
+
+describe('the dialer and the system', () => {
+  it('lists the dialer’s campaigns to choose from, and saves the schedule, the campaigns and the limits', async () => {
+    let dialer = dialerDefaults();
+    const { client, calls } = fakeApi({
+      ...quiet,
+      Settings: () => ({ settings: { autoTranscribe: true, dialer } }),
+      DialerStatus: () => ({
+        dialerStatus: dialerStatus({
+          lastRunAt: new Date().toISOString(),
+          lastRunSummary: 'seen 50, taken 4',
+        }),
+      }),
+      DialerCampaigns: () => ({
+        dialerCampaigns: [
+          { name: 'Sales', calls: 900, connected: 700, interactions: 880, talkSeconds: 90000 },
+          { name: 'Support', calls: 300, connected: 120, interactions: 300, talkSeconds: 9000 },
+        ],
+      }),
+      UpdateSettings: (v) => {
+        dialer = { ...dialer, ...(v.input as { dialer: typeof dialer }).dialer };
+        return { updateSettings: { autoTranscribe: true, dialer } };
+      },
+    });
+    renderAt('/admin', <App />, client);
+    const now = await screen.findByLabelText('The connector now');
+    await waitFor(() => expect(now).toHaveTextContent('0.4.0, schedule off'));
+    expect(now).toHaveTextContent('3 of 200 calls');
+    expect(now).toHaveTextContent('seen 50, taken 4');
+
+    const form = await screen.findByRole('form', { name: 'Dialer settings' });
+    const group = within(form).getByRole('group', { name: 'Campaigns to choose from' });
+    await waitFor(() => expect(within(group).getByText('Sales')).toBeInTheDocument());
+    expect(within(group).getByText('700/900')).toBeInTheDocument();
+    const save = within(form).getByRole('button', { name: 'Save' });
+    expect(save).toBeDisabled(); // nothing changed yet
+
+    const u = userEvent.setup();
+    await u.click(within(form).getByLabelText(/Fetch new calls by themselves/));
+    await u.click(within(group).getByLabelText(/Sales/));
+    const limit = within(form).getByLabelText(/Calls a day/);
+    await u.clear(limit);
+    await u.type(limit, '500');
+    await u.click(save);
+    await waitFor(() => expect(calls.some((c) => c.name === 'UpdateSettings')).toBe(true));
+    expect(calls.find((c) => c.name === 'UpdateSettings')!.variables).toEqual({
+      input: {
+        dialer: { ...dialerDefaults(), scheduleEnabled: true, campaigns: ['Sales'], dailyLimit: 500 },
+      },
+    });
+    expect(await within(form).findByRole('status')).toHaveTextContent('Saved');
+  });
+
+  it('shows whether every service answers', async () => {
+    const { client } = fakeApi({
+      ...quiet,
+      SystemStatus: () => ({
+        systemStatus: {
+          version: '0.11.0',
+          checkedAt: new Date().toISOString(),
+          services: [
+            { name: 'likho-media', address: 'localhost:5010', ok: true, detail: 'answers', latencyMs: 4 },
+            {
+              name: 'likho-connector-ameyo',
+              address: 'localhost:5060',
+              ok: false,
+              detail: 'no answer within 3 s',
+              latencyMs: 3000,
+            },
+          ],
+        },
+      }),
+    });
+    renderAt('/admin', <App />, client);
+    const table = await screen.findByRole('table', { name: 'Services' });
+    await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('likho-media');
+    expect(rows[0]).toHaveTextContent('answering');
+    expect(rows[1]).toHaveTextContent('not answering');
+    expect(rows[1]).toHaveTextContent('no answer within 3 s');
+    expect(screen.getByText(/1 not answering/)).toBeInTheDocument();
   });
 });
