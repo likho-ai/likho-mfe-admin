@@ -1,6 +1,6 @@
 {
   "name": "likho-mfe-admin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Likho admin app: people, invitations, roles, API keys, workspace settings and the audit log; loaded by likho-web-shell",
   "private": true,
   "type": "module",
