@@ -80,7 +80,37 @@ const quiet = {
     engines: [{ registryId: 'whisper-turbo', engine: 'faster-whisper', available: true, isDefault: true }],
   }),
   AuditLog: () => ({ auditLog: { items: [], hasMore: false, endCursor: null } }),
+  SpeechModels: () => ({ speechModels: [] }),
+  GoldSet: () => ({ goldSet: { items: [], audioSeconds: 0 } }),
+  Evaluations: () => ({ evaluations: [] }),
+  TrainingStats: () => ({
+    trainingStats: {
+      examples: 0,
+      scriptExamples: 0,
+      romanExamples: 0,
+      recordings: 0,
+      audioSeconds: 0,
+      lastExampleAt: null,
+    },
+  }),
 };
+
+const rates = (wer: number) => ({ werScript: wer, cerScript: wer / 2, werRoman: wer, cerRoman: wer / 2 });
+const speechModel = (id: string, isDefault: boolean, latest: number | null = null) => ({
+  id,
+  registryId: `faster-whisper/${id}`,
+  engine: 'faster-whisper',
+  name: id,
+  description: '',
+  languages: [],
+  artifactUri: '',
+  baseModelId: '',
+  status: 'available',
+  isDefault,
+  latestEvaluationId: latest === null ? null : 'evl_' + id,
+  latestScores: latest === null ? null : rates(latest),
+  createdAt: new Date().toISOString(),
+});
 
 describe('the admin app', () => {
   it('shows people with their roles, and changes a role', async () => {
@@ -283,5 +313,86 @@ describe('the dialer and the system', () => {
     expect(rows[1]).toHaveTextContent('not answering');
     expect(rows[1]).toHaveTextContent('no answer within 3 s');
     expect(screen.getByText(/1 not answering/)).toBeInTheDocument();
+  });
+
+  it('shows the speech models with their scores, evaluates one on the gold set and makes it the default', async () => {
+    let models = [speechModel('turbo', true, 0.21), speechModel('large-v3', false)];
+    const gold = [
+      {
+        recordingId: 'rec_1',
+        transcriptId: 'trn_1',
+        transcriptVersion: 3,
+        language: 'hi',
+        audioSeconds: 600,
+        lines: 40,
+        addedBy: 'usr_1',
+        addedAt: new Date().toISOString(),
+      },
+    ];
+    const { client, calls } = fakeApi({
+      ...quiet,
+      SpeechModels: () => ({ speechModels: models }),
+      GoldSet: () => ({ goldSet: { items: gold, audioSeconds: 600 } }),
+      StartEvaluation: (v) => ({
+        startEvaluation: {
+          id: 'evl_2',
+          modelId: v.modelId,
+          registryId: 'faster-whisper/large-v3',
+          status: 'queued',
+          scores: rates(0),
+          itemsTotal: 1,
+          itemsDone: 0,
+          audioSeconds: 0,
+          realtimeFactor: 0,
+          error: '',
+          startedBy: 'usr_1',
+          createdAt: new Date().toISOString(),
+          finishedAt: null,
+        },
+      }),
+      SetDefaultSpeechModel: (v) => {
+        models = models.map((m) => ({ ...m, isDefault: m.id === v.id }));
+        return { setDefaultSpeechModel: models.find((m) => m.id === v.id) };
+      },
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderAt('/admin', <App />, client);
+
+    const section = await screen.findByRole('region', { name: 'Speech models' });
+    const table = within(section).getAllByRole('table')[0]!;
+    await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
+    const [turbo, large] = within(table).getAllByRole('row').slice(1);
+    expect(turbo).toHaveTextContent('faster-whisper/turbo');
+    expect(turbo).toHaveTextContent('default');
+    expect(turbo).toHaveTextContent('21.0%');
+    expect(large).toHaveTextContent('not evaluated');
+    expect(within(section).getByText(/1 call, 10 min of audio/)).toBeInTheDocument();
+
+    await userEvent.click(within(large!).getByRole('button', { name: 'Evaluate' }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.name === 'StartEvaluation' && c.variables.modelId === 'large-v3')).toBe(
+        true,
+      ),
+    );
+
+    await userEvent.click(within(large!).getByRole('button', { name: 'Make default' }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.name === 'SetDefaultSpeechModel' && c.variables.id === 'large-v3')).toBe(
+        true,
+      ),
+    );
+    await waitFor(() => expect(within(table).getAllByRole('row')[2]).toHaveTextContent('default'));
+  });
+
+  it('cannot evaluate before the gold set has a call', async () => {
+    const { client } = fakeApi({
+      ...quiet,
+      SpeechModels: () => ({ speechModels: [speechModel('turbo', true)] }),
+    });
+    renderAt('/admin', <App />, client);
+    const section = await screen.findByRole('region', { name: 'Speech models' });
+    const evaluate = await within(section).findByRole('button', { name: 'Evaluate' });
+    expect(evaluate).toBeDisabled();
+    expect(within(section).getByText(/^0 calls, 0 min of audio\. Add calls/)).toBeInTheDocument();
   });
 });
