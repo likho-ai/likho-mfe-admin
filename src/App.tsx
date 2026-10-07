@@ -1,6 +1,7 @@
 /**
  * The admin app: the people of the workspace and their roles, invitations, API keys, the
- * workspace settings, the dialer connector, whether every service answers, and the audit log. Exposed to the shell as ./App; mounted at /admin.
+ * workspace settings, the dialer connector, the speech models (the default, the gold set, evaluations),
+ * whether every service answers, and the audit log. Exposed to the shell as ./App; mounted at /admin.
  * Only an admin gets here (the shell checks the role; the API refuses everyone else).
  */
 import { useMe } from '@likho-ai/web-sdk';
@@ -9,6 +10,7 @@ import { AuditLog } from './components/AuditLog';
 import { DialerSettings } from './components/DialerSettings';
 import { Invitations } from './components/Invitations';
 import { People } from './components/People';
+import { SpeechModels } from './components/SpeechModels';
 import { SystemStatus } from './components/SystemStatus';
 import { WorkspaceSettings } from './components/WorkspaceSettings';
 import './app.css';
@@ -46,6 +48,7 @@ export default function App() {
             <WorkspaceSettings />
           </div>
           <DialerSettings />
+          <SpeechModels />
           <SystemStatus />
           <AuditLog />
         </>
